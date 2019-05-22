@@ -10,8 +10,8 @@ DOWN = 0            # лифт опускается
 WAIT = 2            # лифт ждет
 
 modelTime = 3600
-peopePer1Floor = 20
-peopePerNFloor = 1
+peopePer1Floor = 60 / 20
+peopePerNFloor = 60 / 1
 timePerFloor = 5
 timeMinToDrop = 7
 timeToDrop = 10
@@ -30,7 +30,10 @@ class Human(object):
         self.nextEvent = self.get_rand_time() + curtime     # выставляем время "прибытия" в холл
 
     def get_rand_time(self):
-        return random.randint(0, 59)                        # время прибытия человека
+        if self.curFloor == 0:
+            return random.expovariate(1 / peopePer1Floor)
+        else:
+            return random.expovariate(1 / peopePerNFloor)
 
     def set_state(self, state, ct):
         self.state = state
@@ -74,61 +77,6 @@ def exponential_distribution(min, middle):
         r = random.expovariate(1 / middle)
         if r > min:
             return math.floor(r)
-
-
-# возвоащает случайный этаж в распределении от 1 до верхнего этажа
-def get_floor():
-    random.seed()
-    return random.randint(1, floorCount - 1)
-
-
-# создание будущего появления человека в лифтовом холле
-# в зависимости от направления движения
-def make_human(state, curtime):
-    return Human(0, get_floor(), curtime) if state == UP else Human(get_floor(), 0, curtime)
-
-
-# генерация людей со случайным временем прибытия в холл
-# для людей на первом и остальных этажах
-def generator_process(ng, ct):
-    for i in range(peopePer1Floor):
-        ng.append(make_human(UP, ct))
-    for i in range(peopePerNFloor * floorCount):
-        ng.append(make_human(DOWN, ct))
-    return ng
-
-
-# при наступлении времени прибытия человека в холл, происходит добавление
-# к очереди каждому из доступных лифтов
-def generator_queue(ng, ct, elv):
-    while True:
-        if len(ng) > 0:
-            human = ng.pop(0)                                       # выбираем первого человека из очереди
-            human.set_state(INQUEUE, ct)                                # состояние - в очереди
-            # human.nextEvent = 0                                     # следующее событие не известно
-            if human.destFloor != 0:                                # если человек едет наверх
-                for e in elv:                                       # ставим человека в очередь к нужным лифтам
-                    if e.bottomFloor <= human.destFloor <= e.topFloor:
-                        e.queueUP.append(human)
-                        e.queueUP = sorted(e.queueUP, key=lambda h: h.get_dest_floor())
-
-            else:
-                # если человек едет вниз, то проверяем возможность
-                # вставания в очередь в каждый из доступных лифтов
-                for e in elv:
-                    if e.bottomFloor <= human.curFloor <= e.topFloor:
-                        e.queueDOWN.append(human)
-                        e.queueDOWN = sorted(e.queueDOWN, key=lambda h: h.get_cur_floor(), reverse=True)
-            if len(ng) > 0:
-                # если у следующего человека совпадает время генерации,
-                # тогда повторить заново
-                if ng[0].get_next_event() == ct:
-                    continue
-                else:
-                    break
-        else:
-            break
-    return ng
 
 
 # загрузка людей на 1 этаже
@@ -218,38 +166,74 @@ def check_queue(e, ct):
         e.nextEvent = ct + 1
 
 
+# возвоащает случайный этаж в распределении от 1 до верхнего этажа
+def get_floor():
+    random.seed()
+    return random.randint(1, floorCount - 1)
+
+
+# создание будущего появления человека в лифтовом холле
+# в зависимости от направления движения
+def make_human(state, curtime, curfloor):
+    return Human(0, get_floor(), curtime) if state == UP else Human(curfloor, 0, curtime)
+
+
+def generate_human_in_process(nexteventlist, ct, curfloor):
+    if curfloor == 0:
+        nexteventlist.append(make_human(UP, ct, curfloor))
+    else:
+        nexteventlist.append(make_human(DOWN, ct, curfloor))
+    return nexteventlist
+
+
+def generate_human_in_queue(nexteventlist, elv):
+    human = nexteventlist.pop(0)
+    ct = human.get_next_event()
+    human.set_state(INQUEUE, ct)  # состояние - в очереди
+    # human.nextEvent = 0                                     # следующее событие не известно
+    if human.destFloor != 0:  # если человек едет наверх
+        for e in elv:  # ставим человека в очередь к нужным лифтам
+            if e.bottomFloor <= human.destFloor <= e.topFloor:
+                e.queueUP.append(human)
+                e.queueUP = sorted(e.queueUP, key=lambda h: h.get_dest_floor())
+
+    else:
+        # если человек едет вниз, то проверяем возможность
+        # вставания в очередь в каждый из доступных лифтов
+        for e in elv:
+            if e.bottomFloor <= human.curFloor <= e.topFloor:
+                e.queueDOWN.append(human)
+                e.queueDOWN = sorted(e.queueDOWN, key=lambda h: h.get_cur_floor(), reverse=True)
+    nexteventlist = generate_human_in_process(nexteventlist, ct, human.curFloor)    # генерируем следующего человека на этаже
+    return nexteventlist
+
+
 def simulate(elevators):
-    nextgenerator = []
-    for curtime in range(modelTime):
-
-        # каждую минуту генерируем прибытие новых людей
-        if curtime % 60 == 0:
-            nextgenerator = generator_process(nextgenerator, curtime)
-            nextgenerator = sorted(nextgenerator, key=lambda h: h.get_next_event())  # сортировка по первому событию
-
-        # если пришло время генерации человека в холле
-        if len(nextgenerator) > 0:
-            if curtime == nextgenerator[0].get_next_event():
-                nextgenerator = generator_queue(nextgenerator, curtime, elevators)
-
-        # для каждого лифта смотрим, не пришло ли время разгрузки/погрузки люждей
-        for elevator in elevators:
-            if elevator.get_next_event() == curtime:
-                # если лифт на первом этаже
-                if elevator.state == WAIT:
-                    check_queue(elevator, curtime)
-                if elevator.currentFloor == 0:
-                    loading_1_floor(elevator, curtime)
-                elif elevator.state == UP:
-                    drop_up(elevator, curtime)
-                # иначе загрузить пассажиров в лифт
-                if elevator.state == DOWN:
-                    loading_down(elevator, curtime)
-
+    nextEventList = []
+    for i in range(floorCount):
+        nextEventList = generate_human_in_process(nextEventList, 0, i)
     for elevator in elevators:
-        print('Elevator', elevators.index(elevator))
-        print('\tpeople', elevator.peopleCount)
-        print('\tup', elevator.up)
+        nextEventList.append(elevator)
+    nextEventList = sorted(nextEventList, key=lambda obj: obj.get_next_event())
+    while True:
+        obj = nextEventList[0]
+        if obj.__class__.__name__ == 'Human':
+            nextEventList = generate_human_in_queue(nextEventList, elevators)
+        else:
+            curtime = obj.get_next_event()
+            # если лифт на первом этаже
+            if obj.state == WAIT:
+                check_queue(obj, curtime)
+            if obj.currentFloor == 0:
+                loading_1_floor(obj, curtime)
+            elif obj.state == UP:
+                drop_up(obj, curtime)
+            # иначе загрузить пассажиров в лифт
+            if obj.state == DOWN:
+                loading_down(obj, curtime)
+        nextEventList = sorted(nextEventList, key=lambda obj: obj.get_next_event())
+        if nextEventList[0].get_next_event() > modelTime:
+            break
 
 
 if __name__ == '__main__':
@@ -259,6 +243,6 @@ if __name__ == '__main__':
     for i in range(elevatorCount):
         Elevators.append(Elevator(ElevatorAllocation[i]))
     simulate(Elevators)
-    print(waittime)
+    # print(waittime)
     for i in waittime:
         print(np.mean(i))
